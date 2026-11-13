@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 
 import { request } from '@/api/client'
+import ResumeSnapshotPanel, { type ResumeSnapshot } from '@/components/ResumeSnapshotPanel'
 
 const ENDPOINT = '/api/auditlog'
 const columns = [
@@ -37,25 +39,41 @@ const stats = [
   }
 ]
 
-type Row = Record<string, string | number | null>
+type Row = Record<string, unknown> & { id: number }
+
+type AuditDetail = Row & {
+  resume_snapshot?: ResumeSnapshot
+  resume_live?: boolean
+}
 
 export default function AuditlogView() {
   const [rows, setRows] = useState<Row[]>([])
   const [total, setTotal] = useState(0)
   const [errorMessage, setErrorMessage] = useState('')
   const [filters, setFilters] = useState<Record<string, string>>({})
+  const [detail, setDetail] = useState<AuditDetail | null>(null)
   const filterFields = useMemo(() => columns.slice(0, 3), [])
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
 
   const reload = useCallback(async () => {
     setErrorMessage('')
-    const query = new URLSearchParams(filters).toString()
+    // 记录编号走后端 keyword，通道编号走后端 channel（与同步页联动），其余本地过滤
+    const query = new URLSearchParams()
+    if (filters['记录编号']) query.set('keyword', filters['记录编号'])
+    if (filters['通道编号']) query.set('channel', filters['通道编号'])
     try {
-      const response = await request(`${ENDPOINT}?${query}`)
+      const response = await request(`${ENDPOINT}?${query.toString()}`)
       if (!response.ok) {
         throw new Error('变更记录列表读取失败')
       }
       const payload = await response.json()
-      setRows(payload.items ?? [])
+      let items = (payload.items ?? []) as Row[]
+      for (const field of ['操作表名', '变更类型']) {
+        const value = filters[field]
+        if (value) items = items.filter((row) => String(row[field] ?? '').includes(value))
+      }
+      setRows(items)
       setTotal(payload.total ?? 0)
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '变更审计列表读取失败')
@@ -65,6 +83,26 @@ export default function AuditlogView() {
   useEffect(() => {
     void reload()
   }, [reload])
+
+  // 跨页面联动：从同步通道带 ?channel= 进来时，直接按通道过滤续传审计
+  useEffect(() => {
+    const channel = searchParams.get('channel')
+    if (!channel) return
+    setFilters((prev) => ({ ...prev, '通道编号': channel }))
+  }, [searchParams])
+
+  async function openDetail(row: Row) {
+    setErrorMessage('')
+    try {
+      const response = await request(`${ENDPOINT}/${row.id}`)
+      if (!response.ok) {
+        throw new Error('变更记录详情读取失败')
+      }
+      setDetail((await response.json()) as AuditDetail)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '变更记录详情读取失败')
+    }
+  }
 
   async function runAction(action: string, row: Row) {
     setErrorMessage('')
@@ -119,6 +157,14 @@ export default function AuditlogView() {
             />
           </label>
         ))}
+        <label className="filter-item">
+          <span>通道编号</span>
+          <input
+            value={filters['通道编号'] ?? ''}
+            placeholder="按通道编号过滤续传记录"
+            onChange={(event) => setFilters((prev) => ({ ...prev, '通道编号': event.target.value }))}
+          />
+        </label>
         <button className="btn" type="submit">查询</button>
         <button className="btn ghost" type="button" onClick={() => setFilters({})}>重置条件</button>
       </form>
@@ -127,29 +173,60 @@ export default function AuditlogView() {
         <thead>
           <tr>
             {columns.map((column) => <th key={column}>{column}</th>)}
+            <th>续传水位</th>
             <th>可执行动作</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((row) => (
             <tr key={String(row.id)}>
-              {columns.map((column) => <td key={column}>{row[column] ?? '—'}</td>)}
+              {columns.map((column) => <td key={column}>{String(row[column] ?? '—')}</td>)}
+              <td>{row['续传水位'] ? String(row['续传水位']) : '—'}</td>
               <td className="row-actions">
+                <button className="link" type="button" onClick={() => void openDetail(row)}>
+                  详情
+                </button>
                 {actions.map((action) => (
                   <button key={action} className="link" type="button" onClick={() => void runAction(action, row)}>
                     {action}
                   </button>
                 ))}
+                {Boolean(row['通道编号']) && (
+                  <button
+                    className="link"
+                    type="button"
+                    onClick={() => navigate(`/sync?channel=${encodeURIComponent(String(row['通道编号']))}`)}
+                  >
+                    同步通道
+                  </button>
+                )}
               </td>
             </tr>
           ))}
           {rows.length === 0 && (
             <tr>
-              <td className="empty-state" colSpan={columns.length + 1}>暂无变更审计数据，可先登记变更记录</td>
+              <td className="empty-state" colSpan={columns.length + 2}>暂无变更审计数据，可先登记变更记录</td>
             </tr>
           )}
         </tbody>
       </table>
+
+      {detail && (
+        <section className="detail-panel">
+          <h3>审计详情：{String(detail['记录编号'] ?? '')}</h3>
+          <dl className="kv-grid">
+            <div><dt>操作表名</dt><dd>{String(detail['操作表名'] ?? '—')}</dd></div>
+            <div><dt>变更类型</dt><dd>{String(detail['变更类型'] ?? '—')}</dd></div>
+            <div><dt>变更前值</dt><dd>{String(detail['变更前值'] ?? '—')}</dd></div>
+            <div><dt>变更后值</dt><dd>{String(detail['变更后值'] ?? '—')}</dd></div>
+            <div><dt>失败区间</dt><dd>{String(detail['失败区间'] ?? '—')}</dd></div>
+            <div><dt>操作时间</dt><dd>{String(detail['操作时间'] ?? '—')}</dd></div>
+          </dl>
+          {detail.resume_snapshot && (
+            <ResumeSnapshotPanel snapshot={detail.resume_snapshot} live={detail.resume_live} />
+          )}
+        </section>
+      )}
 
       <footer className="page-foot">
         <span>共 {total} 条变更审计记录</span>

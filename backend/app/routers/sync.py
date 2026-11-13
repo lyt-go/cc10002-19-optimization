@@ -58,6 +58,24 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     return ActionResult(ok=True, message=message, entry=entry)
 
 
+@router.get("/{entry_id}/resume", response_model=dict)
+def get_resume(entry_id: int) -> dict:
+    """读取通道当前的续传结论：同步详情与变更审计共用这一份快照。"""
+    result = service.get_resume(entry_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"同步通道 {entry_id} 不存在或已归档")
+    return result
+
+
+@router.post("/{entry_id}/resume/commit", response_model=ActionResult)
+def commit_resume(entry_id: int, payload: EntryPayload) -> ActionResult:
+    """提交一轮同步结论：按水位/确认/延迟判定复用或重传，重复提交与并发冲突在这里裁决。"""
+    result, message = service.commit_resume(entry_id, payload.values)
+    if result is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=result)
+
+
 @router.get("/export")
 def export_entries() -> dict[str, Any]:
     """导出同步通道清单：返回当前过滤条件下的全量数据。"""

@@ -10,9 +10,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.routers import ROUTERS
+from app.seed import SEED_RESUME_STATES
+from app.services.resume import bootstrap as bootstrap_resume
 from app.store import store
 
 app = FastAPI(title="数仓分层建模与治理平台", version="1.0.0")
+
+# 续传注册表装入示例快照：同步详情、同步列表与变更审计随即读到同一份续传结论
+bootstrap_resume(SEED_RESUME_STATES)
 
 app.add_middleware(
     CORSMiddleware,
